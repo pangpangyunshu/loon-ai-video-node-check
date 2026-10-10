@@ -7,8 +7,7 @@
 #!tag = 工具,节点检测
 
 [Argument]
-mode = select,"auto","batch","single",tag=检测模式,desc=auto 自动识别；batch 优先策略组；single 单节点
-group_name = input,"",tag=策略组名称,desc=推荐填写需要批量检测的策略组名称，必须与配置完全一致
+mode = select,"auto","batch","single",tag=检测模式,desc=auto 按当前上下文自动选择；batch 优先批量；single 单节点
 node_name = input,"",tag=备用单节点名称,desc=批量读取失败时使用；留空则尝试入口节点或策略组当前所选节点
 scope = select,"all","core",tag=检测项目,desc=all 检测五项；core 仅检测 ChatGPT、YouTube、TikTok
 max_nodes = input,"20",tag=每批节点数,desc=1–100，默认 20；大组分批运行
@@ -20,4 +19,4 @@ include_direct = switch,false,tag=包含 DIRECT,desc=默认跳过直连和拒绝
 
 [Script]
 # 远程脚本由 GitHub Raw 加载；不需要额外导入本地 JS。
-generic then script("https://raw.githubusercontent.com/pangpangyunshu/loon-ai-video-node-check/main/NodeServiceCheck.js", {${mode}, ${group_name}, ${node_name}, ${scope}, ${max_nodes}, ${start_index}, ${parallel}, ${request_timeout}, ${total_seconds}, ${include_direct}}) with tag="AI与视频节点检测", img_url="network.system", timeout=300
+generic then script("https://raw.githubusercontent.com/pangpangyunshu/loon-ai-video-node-check/main/NodeServiceCheck.js", {${mode}, ${node_name}, ${scope}, ${max_nodes}, ${start_index}, ${parallel}, ${request_timeout}, ${total_seconds}, ${include_direct}}) with tag="AI与视频节点检测", img_url="network.system", timeout=300

@@ -330,7 +330,10 @@ var NodeServiceCheck = (function () {
     var summary = configSummary(runtime);
     var hasGroupList = Array.isArray(summary.all_policy_groups);
     var groups = hasGroupList ? summary.all_policy_groups : [];
-    var group = settings.group || (settings.mode !== "single" && !contextNode && (typeof params.policyGroup === "string" ? params.policyGroup : "")) || (groups.indexOf(legacyNode) >= 0 ? legacyNode : "");
+    // Generic context can contain both policyGroup and nodeInfo. In auto/batch
+    // mode the policy group is authoritative; nodeInfo is only a fallback.
+    var contextGroup = typeof params.policyGroup === "string" ? params.policyGroup.trim() : "";
+    var group = settings.group || (settings.mode !== "single" && contextGroup) || (groups.indexOf(legacyNode) >= 0 ? legacyNode : "");
     if (settings.mode === "batch" && !group && typeof params.policyGroup === "string") group = params.policyGroup;
     if (settings.mode !== "single" && group) {
       try { return { mode: "batch", source: group, nodes: await enumerate(runtime, group, summary, settings, warnings) }; }
@@ -340,7 +343,7 @@ var NodeServiceCheck = (function () {
     if (group && groups.indexOf(group) < 0) groups = groups.concat([group]);
     var node = explicitNode || (legacyNode && groups.indexOf(legacyNode) < 0 && (hasGroupList || !group) ? legacyNode : "") || (hasGroupList ? selectedLeaf(runtime, group || legacyNode, groups) : "");
     if (!node && settings.mode === "single" && settings.group && hasGroupList) node = selectedLeaf(runtime, settings.group, groups);
-    if (!node || groups.indexOf(node) >= 0 || node === "PROXY") throw new Error("未取得明确的单个节点。请在插件中填写策略组名称以批量检测，或填写单节点名称/从节点脚本入口运行。");
+    if (!node || groups.indexOf(node) >= 0 || node === "PROXY") throw new Error("未取得明确目标。请从目标策略组入口运行以自动读取策略组，或填写备用单节点名称。");
     if (/^REJECT(?:[-_].*)?$/i.test(node)) throw new Error("拒绝策略不能作为检测节点。");
     if (node === "DIRECT" && !settings.includeDirect) throw new Error("默认跳过 DIRECT 直连；如需检测，请在插件中开启“包含 DIRECT”。");
     if (settings.mode === "batch" && !group) warnings.push("入口没有策略组名称，改为检测单个节点。");

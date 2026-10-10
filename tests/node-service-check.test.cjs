@@ -211,9 +211,18 @@ test("explicit node context defaults to one node, while explicit group overrides
     params: { policyGroup: "Root", nodeInfo: JSON.stringify({ name: "Context Leaf" }) },
     summary: { all_policy_groups: ["Root"] }, members: { Root: ["Group Leaf"] },
   });
-  assert.deepEqual(await checker.targets(env.runtime, checker.options({}), []),
+  assert.deepEqual(await checker.targets(env.runtime, checker.options({ mode: "single" }), []),
     { mode: "single", source: "Context Leaf", nodes: ["Context Leaf"] });
   assert.deepEqual(await checker.targets(env.runtime, checker.options({ group_name: "Root" }), []),
+    { mode: "batch", source: "Root", nodes: ["Group Leaf"] });
+});
+
+test("auto mode prefers the automatically supplied policy group over nodeInfo", async () => {
+  const env = harness({
+    params: { policyGroup: "Root", nodeInfo: JSON.stringify({ name: "Context Leaf" }) },
+    summary: { all_policy_groups: ["Root"] }, members: { Root: ["Group Leaf"] },
+  });
+  assert.deepEqual(await checker.targets(env.runtime, checker.options({}), []),
     { mode: "batch", source: "Root", nodes: ["Group Leaf"] });
 });
 
