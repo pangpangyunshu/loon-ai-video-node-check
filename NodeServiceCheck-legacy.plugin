@@ -1,13 +1,14 @@
 #!name = AI 与视频节点批量检测（兼容版）
 #!desc = 递归检测策略组内节点；读取失败回退单节点。检测 ChatGPT、Claude、Gemini、YouTube 与 TikTok；网页可达不等于账号或 App 可用。
 #!author = NodeServiceCheck
-#!date = 2026-10-09
+#!date = 2026-10-10
 #!system = iOS,iPadOS,macOS
 # 兼容旧版 Script 语法；插件参数需要 Loon Build 733+
 #!tag = 工具,节点检测
 
 [Argument]
 mode = select,"auto","batch","single",tag=检测模式,desc=auto 按当前上下文自动选择；batch 优先批量；single 单节点
+group_index = input,"0",tag=策略组序号,desc=首次从无上下文入口运行查看列表，填写对应序号后再次运行；0 使用当前策略组
 node_name = input,"",tag=备用单节点名称,desc=批量读取失败时使用；留空则尝试入口节点或策略组当前所选节点
 scope = select,"all","core",tag=检测项目,desc=all 检测五项；core 仅检测 ChatGPT、YouTube、TikTok
 max_nodes = input,"20",tag=每批节点数,desc=1–100，默认 20；大组分批运行
@@ -19,4 +20,4 @@ include_direct = switch,false,tag=包含 DIRECT,desc=默认跳过直连和拒绝
 
 [Script]
 # 远程脚本由 GitHub Raw 加载；不需要额外导入本地 JS。
-generic script-path=https://raw.githubusercontent.com/pangpangyunshu/loon-ai-video-node-check/main/NodeServiceCheck.js,tag=AI与视频节点检测,img-url=network.system,timeout=300,argument=[{mode},{node_name},{scope},{max_nodes},{start_index},{parallel},{request_timeout},{total_seconds},{include_direct}]
+generic script-path=https://raw.githubusercontent.com/pangpangyunshu/loon-ai-video-node-check/main/NodeServiceCheck.js,tag=AI与视频节点检测,img-url=network.system,timeout=300,argument=[{mode},{group_index},{node_name},{scope},{max_nodes},{start_index},{parallel},{request_timeout},{total_seconds},{include_direct}]

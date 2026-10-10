@@ -1,5 +1,5 @@
 /*
- * Loon 节点 AI / 视频检测 v1.0.0
+ * Loon 节点 AI / 视频检测 v1.1.0
  * Generic 脚本：策略组批量优先，枚举失败时回退到明确的单个节点。
  * 不修改策略选择，不使用 MitM、登录 Cookie、API Key 或付费接口。
  * 官网可达不等于账号/对话/App 可用；报告保留检测层级。
@@ -32,6 +32,7 @@ var NodeServiceCheck = (function () {
     return {
       mode: ["auto", "batch", "single"].indexOf(arg.mode) >= 0 ? arg.mode : "auto",
       group: typeof arg.group_name === "string" ? arg.group_name.trim() : "",
+      groupIndex: bounded(arg.group_index, 0, 0, 10000),
       node: typeof arg.node_name === "string" ? arg.node_name.trim() : "",
       maxNodes: bounded(arg.max_nodes, 20, 1, 100),
       startIndex: bounded(arg.start_index, 1, 1, 10000),
@@ -259,6 +260,28 @@ var NodeServiceCheck = (function () {
       return typeof value === "string" ? JSON.parse(value || "{}") : value || {};
     } catch (_) { return {}; }
   }
+  function policyGroups(summary) {
+    if (!summary || !Array.isArray(summary.all_policy_groups)) return [];
+    var result = [], seen = Object.create(null);
+    for (var i = 0; i < summary.all_policy_groups.length; i++) {
+      var name = summary.all_policy_groups[i];
+      if (typeof name !== "string") continue;
+      name = name.trim();
+      if (name && !seen[name]) { seen[name] = true; result.push(name); }
+    }
+    return result;
+  }
+  function policyGroupsText(groups) {
+    if (!groups.length) return "";
+    var visible = [];
+    for (var i = 0; i < groups.length; i++) visible.push((i + 1) + ". " + groups[i]);
+    return visible.join("\n");
+  }
+  function policyGroupError(message, groups) {
+    var error = new Error(message);
+    error.policyGroups = groups.slice();
+    return error;
+  }
   function readMembers(runtime, name, deadline) {
     return new Promise(function (resolve, reject) {
       var settled = false;
@@ -328,12 +351,19 @@ var NodeServiceCheck = (function () {
     var explicitNode = settings.node || contextNode;
     var legacyNode = typeof params.node === "string" ? params.node : "";
     var summary = configSummary(runtime);
-    var hasGroupList = Array.isArray(summary.all_policy_groups);
-    var groups = hasGroupList ? summary.all_policy_groups : [];
+    var groups = policyGroups(summary);
+    var hasGroupList = groups.length > 0;
+    var indexedGroup = "";
+    if (settings.mode !== "single" && settings.groupIndex > 0) {
+      indexedGroup = groups[settings.groupIndex - 1] || "";
+      if (!indexedGroup) throw policyGroupError(groups.length ?
+        "策略组序号 " + settings.groupIndex + " 不存在，请从下列选项中选择有效序号。" :
+        "当前 Loon 没有返回可选策略组，请从目标策略组的脚本入口运行。", groups);
+    }
     // Generic context can contain both policyGroup and nodeInfo. In auto/batch
     // mode the policy group is authoritative; nodeInfo is only a fallback.
     var contextGroup = typeof params.policyGroup === "string" ? params.policyGroup.trim() : "";
-    var group = settings.group || (settings.mode !== "single" && contextGroup) || (groups.indexOf(legacyNode) >= 0 ? legacyNode : "");
+    var group = settings.group || (settings.mode !== "single" && indexedGroup) || (settings.mode !== "single" && contextGroup) || (groups.indexOf(legacyNode) >= 0 ? legacyNode : "");
     if (settings.mode === "batch" && !group && typeof params.policyGroup === "string") group = params.policyGroup;
     if (settings.mode !== "single" && group) {
       try { return { mode: "batch", source: group, nodes: await enumerate(runtime, group, summary, settings, warnings) }; }
@@ -343,7 +373,10 @@ var NodeServiceCheck = (function () {
     if (group && groups.indexOf(group) < 0) groups = groups.concat([group]);
     var node = explicitNode || (legacyNode && groups.indexOf(legacyNode) < 0 && (hasGroupList || !group) ? legacyNode : "") || (hasGroupList ? selectedLeaf(runtime, group || legacyNode, groups) : "");
     if (!node && settings.mode === "single" && settings.group && hasGroupList) node = selectedLeaf(runtime, settings.group, groups);
-    if (!node || groups.indexOf(node) >= 0 || node === "PROXY") throw new Error("未取得明确目标。请从目标策略组入口运行以自动读取策略组，或填写备用单节点名称。");
+    if (!node || groups.indexOf(node) >= 0 || node === "PROXY") {
+      if (hasGroupList) throw policyGroupError("未取得明确目标。请选择要检测的策略组。", groups);
+      throw new Error("未取得明确目标。请从目标策略组入口运行，或填写备用单节点名称。");
+    }
     if (/^REJECT(?:[-_].*)?$/i.test(node)) throw new Error("拒绝策略不能作为检测节点。");
     if (node === "DIRECT" && !settings.includeDirect) throw new Error("默认跳过 DIRECT 直连；如需检测，请在插件中开启“包含 DIRECT”。");
     if (settings.mode === "batch" && !group) warnings.push("入口没有策略组名称，改为检测单个节点。");
@@ -353,7 +386,8 @@ var NodeServiceCheck = (function () {
   function render(report) {
     var esc = escapeHTML;
     var warnings = report.warnings.map(function (w) { return "<p class='warning'>" + esc(w) + "</p>"; }).join("");
-    var title = report.mode === "batch" ? "策略组批量检测" : "单节点检测";
+    var groups = Array.isArray(report.policyGroups) ? report.policyGroups : [];
+    var title = groups.length ? "选择策略组" : report.mode === "batch" ? "策略组批量检测" : "单节点检测";
     var cells = report.rows.map(function (row) {
       return "<tr><th>" + esc(row.name) + "</th>" + report.services.map(function (s) { var r = row.results[s.id]; return "<td class='" + r.state + "'>" + esc(r.label) + "</td>"; }).join("") + "</tr>";
     }).join("");
@@ -365,16 +399,18 @@ var NodeServiceCheck = (function () {
     }).join("");
     var finished = report.rows.filter(function (r) { return r.complete; }).length;
     var next = report.nextIndex ? "<p class='warning'>下一批：将“起始序号”设为 <b>" + report.nextIndex + "</b>。节点顺序按本次策略组展开结果；订阅更新后可能变化。</p>" : "";
+    var chooser = groups.length ? "<section class='chooser'><p>请选择要检测的策略组，然后在插件参数中把对应数字填入“策略组序号”，保存并再次运行。</p><ol>" + groups.map(function (name) { return "<li>" + esc(name) + "</li>"; }).join("") + "</ol></section>" : "";
+    var table = report.rows.length ? "<div class='scroll'><table><thead><tr><th>节点</th>" + report.services.map(function (s) { return "<th>" + esc(s.name) + "</th>"; }).join("") + "</tr></thead><tbody>" + cells + "</tbody></table></div>" : "";
+    var status = groups.length ? "<p class='muted'>共 " + groups.length + " 个可选策略组</p>" : "<p>" + esc(report.source || "未选择目标") + "</p><p class='muted'>" + esc(report.time) + " · 共 " + report.total + " 个节点，本批 " + report.rows.length + " 个，完成 " + finished + " 个 · 耗时 " + (report.elapsedMs / 1000).toFixed(1) + "s</p>";
+    var note = report.rows.length ? "<p class='note'>🌐 网页可达只验证站点页面；✅ 链路通过表示播放器/公开媒体 HEAD 检查通过，未下载视频。AI 对话、账号权限、YouTube Premium、持续播放和 TikTok App 需要实际使用验证。超时、403、429、验证码或页面结构变化不会被直接当作地区封锁。本脚本不修改策略组选择，不使用解密证书。</p>" : "";
     return "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><meta name='color-scheme' content='light dark'><style>" +
-      "body{font:14px -apple-system,BlinkMacSystemFont,sans-serif;margin:18px;line-height:1.6;color:#172033;background:#f5f7fb}h2{margin:0 0 8px}p{margin:8px 0}.muted,small{color:#687588}.scroll{overflow-x:auto;background:#fff;border-radius:12px}table{border-collapse:collapse;white-space:nowrap;width:100%}th,td{padding:10px 12px;border-bottom:1px solid #e7ecf3;text-align:left}th:first-child{max-width:200px;white-space:normal;overflow-wrap:anywhere}.pass{color:#07804e}.reachable{color:#186bbc}.restricted,.unreachable{color:#d13d45}.limited,.unknown,.pending,.warning{color:#a26208}details{background:#fff;padding:12px;border-radius:12px;margin-top:12px;overflow-wrap:anywhere}summary{font-weight:600;cursor:pointer}.note{padding:12px;border-radius:12px;background:#eaf0f8}@media(prefers-color-scheme:dark){body{background:#141921;color:#e7edf8}.scroll,details{background:#202735}th,td{border-color:#343e4e}.muted,small{color:#a6b3c6}.note{background:#263449}.pass{color:#68dba7}.reachable{color:#81b6ff}.restricted,.unreachable{color:#ff9096}.limited,.unknown,.pending,.warning{color:#efbe72}}" +
-      "</style></head><body><h2>" + title + "</h2><p>" + esc(report.source || "未选择目标") + "</p><p class='muted'>" + esc(report.time) + " · 共 " + report.total + " 个节点，本批 " + report.rows.length + " 个，完成 " + finished + " 个 · 耗时 " + (report.elapsedMs / 1000).toFixed(1) + "s</p>" + warnings +
-      "<div class='scroll'><table><thead><tr><th>节点</th>" + report.services.map(function (s) { return "<th>" + esc(s.name) + "</th>"; }).join("") + "</tr></thead><tbody>" + cells + "</tbody></table></div>" + next + details +
-      "<p class='note'>🌐 网页可达只验证站点页面；✅ 链路通过表示播放器/公开媒体 HEAD 检查通过，未下载视频。AI 对话、账号权限、YouTube Premium、持续播放和 TikTok App 需要实际使用验证。超时、403、429、验证码或页面结构变化不会被直接当作地区封锁。本脚本不修改策略组选择，不使用解密证书。</p></body></html>";
+      "body{font:14px -apple-system,BlinkMacSystemFont,sans-serif;margin:18px;line-height:1.6;color:#172033;background:#f5f7fb}h2{margin:0 0 8px}p{margin:8px 0}.muted,small{color:#687588}.scroll{overflow-x:auto;background:#fff;border-radius:8px}table{border-collapse:collapse;white-space:nowrap;width:100%}th,td{padding:10px 12px;border-bottom:1px solid #e7ecf3;text-align:left}th:first-child{max-width:200px;white-space:normal;overflow-wrap:anywhere}.pass{color:#07804e}.reachable{color:#186bbc}.restricted,.unreachable{color:#d13d45}.limited,.unknown,.pending,.warning{color:#a26208}.warning{white-space:pre-line}details,.chooser{background:#fff;padding:12px;border-radius:8px;margin-top:12px;overflow-wrap:anywhere}summary{font-weight:600;cursor:pointer}.chooser ol{margin:8px 0 0;padding-left:28px}.chooser li{padding:5px 2px;border-bottom:1px solid #e7ecf3}.chooser li:last-child{border-bottom:0}.note{padding:12px;border-radius:8px;background:#eaf0f8}@media(prefers-color-scheme:dark){body{background:#141921;color:#e7edf8}.scroll,details,.chooser{background:#202735}th,td,.chooser li{border-color:#343e4e}.muted,small{color:#a6b3c6}.note{background:#263449}.pass{color:#68dba7}.reachable{color:#81b6ff}.restricted,.unreachable{color:#ff9096}.limited,.unknown,.pending,.warning{color:#efbe72}}" +
+      "</style></head><body><h2>" + title + "</h2>" + status + warnings + chooser + table + next + details + note + "</body></html>";
   }
   async function run(runtime) {
     var settings = options(runtime.argument);
     var start = runtime.now(), control = { stopped: false, deadline: start + settings.totalMs };
-    var report = { mode: "single", source: "", total: 0, rows: [], warnings: [], services: settings.services, time: new Date(start + 8 * 3600000).toISOString().slice(0, 19).replace("T", " ") + " UTC+08:00", elapsedMs: 0, nextIndex: 0 };
+    var report = { mode: "single", source: "", total: 0, rows: [], warnings: [], policyGroups: [], services: settings.services, time: new Date(start + 8 * 3600000).toISOString().slice(0, 19).replace("T", " ") + " UTC+08:00", elapsedMs: 0, nextIndex: 0 };
     var finished = false;
     function finish() {
       if (finished) return;
@@ -383,8 +419,9 @@ var NodeServiceCheck = (function () {
       var incomplete = report.rows.findIndex(function (r) { return !r.complete; });
       if (report.mode === "batch") report.nextIndex = incomplete >= 0 ? settings.startIndex + incomplete : settings.startIndex + report.rows.length <= report.total ? settings.startIndex + report.rows.length : 0;
       var content = report.rows.map(function (row) { return row.name + "\n" + report.services.map(function (s) { return s.name + "：" + row.results[s.id].label + " · " + row.results[s.id].detail; }).join("\n"); }).join("\n\n");
+      if (report.policyGroups.length) content = "请选择要检测的策略组，并将对应序号填入插件参数“策略组序号”，然后再次运行：\n\n" + policyGroupsText(report.policyGroups);
       try { if (runtime.store && runtime.store.write) runtime.store.write(JSON.stringify(report), "loon.node-service-check.last"); } catch (_) {}
-      runtime.done({ title: "AI / 视频节点检测", content: content || report.warnings.join("\n"), htmlMessage: render(report) });
+      runtime.done({ title: report.policyGroups.length ? "选择要检测的策略组" : "AI / 视频节点检测", content: content || report.warnings.join("\n"), htmlMessage: render(report) });
     }
     runtime.later(function () { if (!finished) { report.warnings.push("本次总时限已到；未完成项保留为未完成，可从下一批起点重测。"); finish(); } }, settings.totalMs);
     try {
@@ -418,7 +455,11 @@ var NodeServiceCheck = (function () {
       for (var i = 0; i < Math.min(settings.parallel, report.rows.length); i++) workers.push(worker());
       await Promise.all(workers);
       finish();
-    } catch (error) { if (!finished) { report.warnings.push(error.message || String(error)); finish(); } }
+    } catch (error) { if (!finished) {
+      if (error && Array.isArray(error.policyGroups)) report.policyGroups = error.policyGroups;
+      report.warnings.push(error.message || String(error));
+      finish();
+    } }
     return report;
   }
   return { run: run, options: options, targets: targets, enumerate: enumerate, readMembers: readMembers, classifyPage: classifyPage,

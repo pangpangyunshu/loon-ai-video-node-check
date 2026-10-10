@@ -128,6 +128,7 @@ test("arguments accept plugin JSON, clamp budgets, and select core services", ()
   }));
   assert.equal(options.group, "Group");
   assert.equal(options.node, "Leaf");
+  assert.equal(options.groupIndex, 0);
   assert.deepEqual(options.services.map((entry) => entry.id), ["chatgpt", "youtube", "tiktok"]);
   assert.equal(options.parallel, 3);
   assert.equal(options.maxNodes, 1);
@@ -136,6 +137,51 @@ test("arguments accept plugin JSON, clamp budgets, and select core services", ()
   assert.equal(options.startIndex, 1);
   assert.equal(options.includeDirect, true);
   assert.equal(checker.options("{invalid").mode, "auto");
+});
+
+test("policy group index selects a group from the runtime configuration", async () => {
+  const env = harness({
+    summary: { all_policy_groups: ["First Group", "Second Group"] },
+    members: { "Second Group": ["Leaf B"] },
+  });
+  assert.equal(checker.options({ group_index: "2" }).groupIndex, 2);
+  assert.deepEqual(await checker.targets(env.runtime, checker.options({ group_index: "2" }), []),
+    { mode: "batch", source: "Second Group", nodes: ["Leaf B"] });
+});
+
+test("missing context reports numbered policy group choices", async () => {
+  const env = harness({ summary: { all_policy_groups: ["Alpha", "Beta"] } });
+  const report = await checker.run(env.runtime);
+  assert.equal(env.outputs.length, 1);
+  assert.equal(env.outputs[0].title, "选择要检测的策略组");
+  assert.match(env.outputs[0].content, /1\. Alpha/);
+  assert.match(env.outputs[0].content, /2\. Beta/);
+  assert.match(env.outputs[0].htmlMessage, /选择策略组/);
+  assert.match(env.outputs[0].htmlMessage, /<li>Alpha<\/li>/);
+  assert.doesNotMatch(env.outputs[0].htmlMessage, /<table>/);
+  assert.deepEqual(report.policyGroups, ["Alpha", "Beta"]);
+  assert.equal(report.rows.length, 0);
+});
+
+test("invalid policy group index returns the available choices", async () => {
+  const env = harness({
+    argument: { group_index: "3" },
+    summary: { all_policy_groups: ["Alpha", "Beta"] },
+  });
+  const report = await checker.run(env.runtime);
+  assert.match(report.warnings[0], /序号 3 不存在/);
+  assert.deepEqual(report.policyGroups, ["Alpha", "Beta"]);
+  assert.match(env.outputs[0].content, /2\. Beta/);
+  assert.equal(env.requests.length, 0);
+});
+
+test("single mode ignores the policy group index", async () => {
+  const env = harness({
+    params: { nodeInfo: { name: "Leaf A" } },
+    summary: { all_policy_groups: ["Root"] },
+  });
+  assert.deepEqual(await checker.targets(env.runtime, checker.options({ mode: "single", group_index: "99" }), []),
+    { mode: "single", source: "Leaf A", nodes: ["Leaf A"] });
 });
 
 test("getSubPolicies accepts newer JSON strings and legacy arrays", async () => {
@@ -561,4 +607,15 @@ test("render escapes node names and details instead of executing page-supplied H
   assert.ok(!html.includes("<img src=x"));
   assert.ok(html.includes("&lt;script&gt;bad()&lt;/script&gt;"));
   assert.ok(html.includes("&lt;b&gt;bad&lt;/b&gt;"));
+});
+
+test("render escapes policy group names in the chooser", () => {
+  const report = {
+    mode: "single", source: "", total: 0, rows: [],
+    warnings: [], policyGroups: ['<img src=x onerror="bad()"> & Group'], services: [service("chatgpt")],
+    time: "2026-10-10", elapsedMs: 1, nextIndex: 0,
+  };
+  const html = checker.render(report);
+  assert.ok(!html.includes('<img src=x onerror="bad()">'));
+  assert.ok(html.includes('&lt;img src=x onerror=&quot;bad()&quot;&gt; &amp; Group'));
 });
